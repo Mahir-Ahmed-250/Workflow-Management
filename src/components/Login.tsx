@@ -265,7 +265,7 @@ export default function Login({
             <KeyRound className="w-8 h-8" />
           </div>
           <h1 className="text-2xl font-bold tracking-tight font-display">
-            Workflow ESM
+            WorkflowESM
           </h1>
           <p className="text-sm text-slate-500 mt-1">
             Enterprise Role-Based Log Portal

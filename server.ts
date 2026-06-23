@@ -10,6 +10,9 @@ const __dirname = path.dirname(__filename);
 const PORT = 3000;
 const isVercel = process.env.VERCEL === "1" || !!process.env.NOW_REGION || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
+// Primary App Script URL from environment variable takes priority for deployment stability
+const ENV_APPSCRIPT_URL = process.env.APPSCRIPT_URL || process.env.VITE_APPSCRIPT_URL;
+
 // Hardcoded fallback data in case the external JSON is missing or blank
 const fallbackDbData = {
   users: [
@@ -75,8 +78,7 @@ const fallbackDbData = {
     User: ["my_profile", "enter_workflow", "history_workflow", "filter_workflow"],
   },
   devices: [],
-  appscriptUrl:
-    "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec",
+  appscriptUrl: ENV_APPSCRIPT_URL || "https://script.google.com/macros/s/AKfycbwLREtj3l2Ukls4Fo82B5W2B2cy9Smnu8ihAvorKNB3y3cMgSo4oVvoq0LUErFwSeI/exec",
   settings: {
     showLoginInstructions: true
   }
@@ -89,6 +91,11 @@ const ACTIVE_DB_PATH = path.join(os.tmpdir(), "workflow-esm-db.json");
 function initActiveDB() {
   try {
     let seedData: any = null;
+    
+    // Priority: Use Environment Variable URL if set (highest priority for deployment)
+    if (ENV_APPSCRIPT_URL) {
+      console.log(`[Database] Using priority Apps Script URL from environment: ${ENV_APPSCRIPT_URL.substring(0, 40)}...`);
+    }
     // Try to load from process.cwd()/src/db/db.json
     try {
       const directSrcPath = path.join(process.cwd(), "src", "db", "db.json");
@@ -122,6 +129,11 @@ function initActiveDB() {
     let shouldWrite = false;
     let dataToSave = (seedData && seedData.users) ? seedData : fallbackDbData;
 
+    // Apply ENV priority if initialized from seed
+    if (ENV_APPSCRIPT_URL && dataToSave.appscriptUrl !== ENV_APPSCRIPT_URL) {
+      dataToSave.appscriptUrl = ENV_APPSCRIPT_URL;
+    }
+
     if (!fs.existsSync(ACTIVE_DB_PATH)) {
       shouldWrite = true;
       console.log(`[Database] Active DB does not exist. Initializing: ${ACTIVE_DB_PATH}`);
@@ -130,8 +142,14 @@ function initActiveDB() {
       try {
         const activeData = JSON.parse(fs.readFileSync(ACTIVE_DB_PATH, "utf8"));
         
+        // Priority: ENV always wins for connectivity persistence
+        if (ENV_APPSCRIPT_URL && activeData.appscriptUrl !== ENV_APPSCRIPT_URL) {
+          activeData.appscriptUrl = ENV_APPSCRIPT_URL;
+          dataToSave = activeData;
+          shouldWrite = true;
+        } 
         // If appscriptUrl changed in source db.json, overwrite config immediately to synchronize connectivity
-        if (dataToSave && dataToSave.appscriptUrl && activeData.appscriptUrl !== dataToSave.appscriptUrl) {
+        else if (dataToSave && dataToSave.appscriptUrl && activeData.appscriptUrl !== dataToSave.appscriptUrl) {
           console.log(`[Database] appscriptUrl updated in source (${dataToSave.appscriptUrl}). Overwriting active DB to apply new integration.`);
           // Merge to preserve existing workflows/devices but update connectivity
           activeData.appscriptUrl = dataToSave.appscriptUrl;
@@ -169,6 +187,7 @@ function initActiveDB() {
 
     if (shouldWrite) {
       fs.writeFileSync(ACTIVE_DB_PATH, JSON.stringify(dataToSave, null, 2), "utf8");
+      cachedDBInMemory = dataToSave;
     }
   } catch (err) {
     console.error("[Database] Failed to initialize active database:", err);
@@ -404,10 +423,19 @@ async function syncUsersFromAppsScript(url: string) {
   try {
     const fetchUrl = `${url}${url.includes("?") ? "&" : "?"}action=getUsers`;
     const controller = new AbortController();
-    const id = setTimeout(() => controller.abort(), 6500); // 6.5s timeout for resilient cold-start sync
+    const id = setTimeout(() => controller.abort(), 10000); // Increased to 10s for slow cold-starts
 
-    const res = await fetch(fetchUrl, { signal: controller.signal });
+    const res = await fetch(fetchUrl, { 
+      signal: controller.signal,
+      headers: { "Accept": "application/json" }
+    });
     clearTimeout(id);
+    
+    if (!res.ok) {
+      console.warn(`[Sync Users] Fetch failed with status: ${res.status}`);
+      return;
+    }
+
     const data = await res.json();
 
     if (data && data.success && Array.isArray(data.data)) {
@@ -427,48 +455,37 @@ async function syncUsersFromAppsScript(url: string) {
       }));
 
       if (sheetUsers.length > 0) {
-        // Merge with existing properties like local password or permissions if sheet returns empty
         const finalUsers = sheetUsers.map((sheetUser: any) => {
           const existing = db.users.find(
             (u: any) => String(u.pin).trim().toUpperCase() === String(sheetUser.pin).trim().toUpperCase(),
           );
           return {
             ...sheetUser,
-            password:
-              sheetUser.password || (existing && existing.password) || "",
-            customPermissions:
-              sheetUser.customPermissions &&
-              sheetUser.customPermissions.length > 0
-                ? sheetUser.customPermissions
-                : (existing && existing.customPermissions) || [],
+            password: sheetUser.password || (existing && existing.password) || "",
+            customPermissions: (sheetUser.customPermissions && sheetUser.customPermissions.length > 0)
+              ? sheetUser.customPermissions
+              : (existing && existing.customPermissions) || [],
           };
         });
 
-        // CRITICAL SAFETY FOR VERCEL: Preserve local-only users (like seeded backdoor Super Admins or manually added local profiles)
-        // who are not listed in the Google Sheet. This prevents them from being deleted upon synchronization.
         db.users.forEach((localUser: any) => {
           if (localUser && localUser.pin) {
             const existsInSheet = sheetUsers.some(
               (su: any) => String(su.pin).trim().toUpperCase() === String(localUser.pin).trim().toUpperCase()
             );
-            if (!existsInSheet) {
-              finalUsers.push(localUser);
-            }
+            if (!existsInSheet) finalUsers.push(localUser);
           }
         });
 
         db.users = finalUsers;
         writeDB(db);
-        console.log(
-          `Sync users: loaded ${sheetUsers.length} records from Google Sheets, merged and preserved ${finalUsers.length - sheetUsers.length} local-only accounts.`,
-        );
+        console.log(`[Sync Users] Success: ${sheetUsers.length} from Sheets.`);
       }
+    } else {
+      console.warn("[Sync Users] Sheet returned no data or success=false", data);
     }
   } catch (err: any) {
-    console.warn(
-      "Google Sheets user directory sync bypassed:",
-      err.message || err,
-    );
+    console.warn("[Sync Users] Google Sheets sync failed:", err.message || err);
   }
 }
 
@@ -1873,7 +1890,23 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    let distPath = path.join(process.cwd(), "dist");
+    
+    // Vercel path resilience: if process.cwd()/dist doesn't exist, try relative to __dirname
+    if (!fs.existsSync(distPath)) {
+      const altDistPaths = [
+        path.join(__dirname, "dist"),
+        path.join(__dirname, "..", "dist"),
+        path.join(__dirname, "..", "..", "dist")
+      ];
+      for (const alt of altDistPaths) {
+        if (fs.existsSync(alt)) {
+          distPath = alt;
+          break;
+        }
+      }
+    }
+
     app.use(express.static(distPath));
     app.get("*", (req: any, res: any) => {
       const indexPath = path.join(distPath, "index.html");
@@ -1881,13 +1914,25 @@ async function startServer() {
         if (fs.existsSync(indexPath)) {
           return res.sendFile(indexPath);
         }
-      } catch (err) {
+      } catch (err: any) {
         console.error("Error serving index.html:", err);
       }
+      
+      // Fallback for Vercel/Serverless: if path contains /api/, it's a missing API route
+      if (req.path.startsWith('/api/')) {
+        return res.status(404).json({
+          success: false,
+          error: "API Route Not Found",
+          path: req.path
+        });
+      }
+
       return res.status(404).json({ 
         success: false, 
         error: "Client assets not found", 
-        details: "Ensure 'npm run build' was executed and 'dist' exists." 
+        details: `Looked in: ${distPath}. Ensure 'npm run build' was executed.`,
+        cwd: process.cwd(),
+        dirname: __dirname
       });
     });
   }
