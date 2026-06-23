@@ -1,0 +1,6 @@
+{
+  "name": "Workflow Management System",
+  "description": "A web-based Role-Based Workflow Management System with detailed tracking, hardware inventory lifecycle management, advanced filters, user management, and interactive analytics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
