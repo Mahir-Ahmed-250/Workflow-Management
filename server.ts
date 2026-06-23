@@ -4,8 +4,18 @@ import fs from "fs";
 import os from "os";
 import { fileURLToPath } from "url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const resolvedFilename =
+  typeof import.meta.url !== "undefined"
+    ? fileURLToPath(import.meta.url)
+    : typeof __filename !== "undefined"
+    ? __filename
+    : "";
+const resolvedDirname =
+  typeof import.meta.url !== "undefined"
+    ? path.dirname(resolvedFilename)
+    : typeof __dirname !== "undefined"
+    ? __dirname
+    : "";
 
 const PORT = 3000;
 const isVercel = process.env.VERCEL === "1" || !!process.env.NOW_REGION || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
@@ -110,9 +120,9 @@ function initActiveDB() {
     if (!seedData || !seedData.users) {
       try {
         const altPaths = [
-          path.join(__dirname, "src", "db", "db.json"),
-          path.join(__dirname, "..", "src", "db", "db.json"),
-          path.join(__dirname, "db.json")
+          path.join(resolvedDirname, "src", "db", "db.json"),
+          path.join(resolvedDirname, "..", "src", "db", "db.json"),
+          path.join(resolvedDirname, "db.json")
         ];
         
         for (const altPath of altPaths) {
@@ -1892,12 +1902,12 @@ async function startServer() {
   } else {
     let distPath = path.join(process.cwd(), "dist");
     
-    // Vercel path resilience: if process.cwd()/dist doesn't exist, try relative to __dirname
+    // Vercel path resilience: if process.cwd()/dist doesn't exist, try relative to resolvedDirname
     if (!fs.existsSync(distPath)) {
       const altDistPaths = [
-        path.join(__dirname, "dist"),
-        path.join(__dirname, "..", "dist"),
-        path.join(__dirname, "..", "..", "dist")
+        path.join(resolvedDirname, "dist"),
+        path.join(resolvedDirname, "..", "dist"),
+        path.join(resolvedDirname, "..", "..", "dist")
       ];
       for (const alt of altDistPaths) {
         if (fs.existsSync(alt)) {
@@ -1932,7 +1942,7 @@ async function startServer() {
         error: "Client assets not found", 
         details: `Looked in: ${distPath}. Ensure 'npm run build' was executed.`,
         cwd: process.cwd(),
-        dirname: __dirname
+        dirname: resolvedDirname
       });
     });
   }
@@ -1958,34 +1968,25 @@ export default async function (req: any, res: any) {
   }
 }
 
+// Global background task: Start synchronization as soon as server boots
+appPromise.then((appInstance) => {
+  const db = readDB();
+  const url = db.appscriptUrl || ENV_APPSCRIPT_URL;
+  if (url) {
+    console.log(`[Boot] Triggering background synchronization with Google Sheets: ${url.substring(0, 50)}...`);
+    Promise.all([
+      syncUsersFromAppsScript(url),
+      syncWorkflowsFromAppsScript(url).catch(() => {}),
+      syncDevicesFromAppsScript(url).catch(() => {})
+    ]).catch(e => console.warn("[Boot] Initial sync partially failed:", e));
+  }
+});
+
 // Start local listener only if not running in a serverless environment like Vercel
 if (process.env.VERCEL !== "1") {
   appPromise.then((app) => {
     app.listen(Number(PORT), "0.0.0.0", () => {
       console.log(`Server fully listening on http://0.0.0.0:${PORT}`);
-
-      // Background dynamic sync from Google Sheets on start
-      const startDb = readDB();
-      const url = startDb.appscriptUrl;
-      if (url) {
-        console.log(
-          "Triggering start-up background synchronisation with Google Sheets...",
-        );
-        Promise.all([
-          syncUsersFromAppsScript(url),
-          syncWorkflowsFromAppsScript(url),
-          syncDevicesFromAppsScript(url),
-        ])
-          .then(() => {
-            console.log("Start-up Google Sheets data synchronization completed.");
-          })
-          .catch((err) => {
-            console.warn(
-              "Start-up Google Sheets data synchronization bypassed:",
-              err,
-            );
-          });
-      }
     });
   });
 }
