@@ -36,9 +36,12 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<string>("my_profile");
   const [allowedPermissions, setAllowedPermissions] = useState<string[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(() => {
-    // Read preference on load
-    const saved = localStorage.getItem("wms_dark_mode");
-    return saved === "true";
+    try {
+      const saved = localStorage.getItem("wms_dark_mode");
+      return saved === "true";
+    } catch (e) {
+      return false;
+    }
   });
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
@@ -80,7 +83,9 @@ export default function App() {
 
   // Update theme helper class on wrap
   useEffect(() => {
-    localStorage.setItem("wms_dark_mode", String(isDarkMode));
+    try {
+      localStorage.setItem("wms_dark_mode", String(isDarkMode));
+    } catch (e) {}
     if (isDarkMode) {
       document.documentElement.classList.add('dark');
     } else {
@@ -91,8 +96,10 @@ export default function App() {
   const handleLoginSuccess = (user: User, perms: string[]) => {
     setCurrentUser(user);
     setAllowedPermissions(perms);
-    localStorage.setItem("wms_session", JSON.stringify(user));
-    localStorage.setItem("wms_permissions", JSON.stringify(perms));
+    try {
+      localStorage.setItem("wms_session", JSON.stringify(user));
+      localStorage.setItem("wms_permissions", JSON.stringify(perms));
+    } catch (e) {}
     
     // Auto route to first permitted module tab
     if (perms.length > 0) {
@@ -103,8 +110,10 @@ export default function App() {
   const handleLogout = () => {
     setCurrentUser(null);
     setAllowedPermissions([]);
-    localStorage.removeItem("wms_session");
-    localStorage.removeItem("wms_permissions");
+    try {
+      localStorage.removeItem("wms_session");
+      localStorage.removeItem("wms_permissions");
+    } catch (e) {}
     setActiveTab("my_profile");
   };
 

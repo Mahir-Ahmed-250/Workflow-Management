@@ -8,7 +8,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
-const isVercel = process.env.VERCEL === "1";
+const isVercel = process.env.VERCEL === "1" || !!process.env.NOW_REGION || !!process.env.AWS_LAMBDA_FUNCTION_NAME;
 
 // Hardcoded fallback data in case the external JSON is missing or blank
 const fallbackDbData = {
@@ -597,13 +597,29 @@ async function startServer() {
   const app = express();
   app.use(express.json());
 
+  // Health check for deployment debugging
+  app.get("/api/health", (req, res) => {
+    res.json({
+      status: "ok",
+      isVercel: !!process.env.VERCEL,
+      nodeEnv: process.env.NODE_ENV,
+      time: new Date().toISOString()
+    });
+  });
+
   // Vercel Serverless Route path fixer: Prepend /api if Vercel stripped it, or reconstruct from original path/header
   app.use((req: any, res: any, next: any) => {
     if (isVercel) {
       try {
-        const originalUrl = req.url || "";
+        const originalUrl = req.url || "/";
         const urlObj = new URL(originalUrl, "http://localhost");
-        const origPathQuery = urlObj.searchParams.get("_original_path") || (req.query && req.query._original_path);
+        
+        // Try getting _original_path from search params (set in vercel.json) or req.query
+        let origPathQuery = urlObj.searchParams.get("_original_path");
+        if (!origPathQuery && req.query && req.query._original_path) {
+          origPathQuery = String(req.query._original_path);
+        }
+        
         const matchedPathHeader = req.headers["x-matched-path"];
 
         if (origPathQuery) {
@@ -612,41 +628,21 @@ async function startServer() {
           urlObj.pathname = "/api/" + pathStr.replace(/^\/+/, "");
           req.url = urlObj.pathname + urlObj.search;
           
-          // Sync and populate req.query for Express
-          req.query = req.query || {};
-          delete req.query._original_path;
-          urlObj.searchParams.forEach((val: any, key: any) => {
-            req.query[key] = val;
-          });
+          // Clear query param so it doesn't leak into business logic
+          if (req.query) delete req.query._original_path;
           
-          console.log(`[Vercel Route Fixer] Reconstructed from Query: ${originalUrl} -> ${req.url}`);
-        } else if (matchedPathHeader && String(matchedPathHeader) !== "/api/index") {
-          const matchedPathStr = String(matchedPathHeader);
-          urlObj.pathname = matchedPathStr;
-          req.url = urlObj.pathname + urlObj.search;
-          console.log(`[Vercel Route Fixer] Reconstructed from Header: ${originalUrl} -> ${req.url}`);
-        } else if (req.url.startsWith("/api/index")) {
-          // If URL is mapped to api/index but has no specified origPathQuery, let's treat it as-is or check if it needs cleanup
-          console.log(`[Vercel Route Fixer] Index API matched, keeping url: ${req.url}`);
-        } else if (!req.url.startsWith("/api")) {
-          const separator = req.url.startsWith("/") ? "" : "/";
-          req.url = "/api" + separator + req.url;
-          console.log(`[Vercel Route Fixer] Prepended /api: ${originalUrl} -> ${req.url}`);
-        } else {
-          console.log(`[Server Request] Method=${req.method} URL=${req.url}`);
+          console.log(`[Vercel Route Fixer] Reconstructed: ${originalUrl} -> ${req.url}`);
+        } else if (matchedPathHeader && String(matchedPathHeader).startsWith("/api") && String(matchedPathHeader) !== "/api/index") {
+          req.url = String(matchedPathHeader) + urlObj.search;
+          console.log(`[Vercel Route Fixer] Header Rewrite: ${originalUrl} -> ${req.url}`);
         }
-
-        // CRITICAL: Express caches parsed URL. Clear cache so Express re-parses our modified req.url!
-        try { delete req._parsedUrl; } catch (e) {}
-        try { delete req._parsedUrlSelf; } catch (e) {}
-        try { delete req.path; } catch (e) {}
-        try { delete req._path; } catch (e) {}
         
+        // Ensure Express cache is cleared so it picks up the URL change
+        try { delete req._parsedUrl; } catch (e) {}
+        try { delete req.path; } catch (e) {}
       } catch (err) {
         console.error("Vercel route fixer error:", err);
       }
-    } else {
-      console.log(`[Server Request] Method=${req.method} URL=${req.url}`);
     }
     next();
   });
@@ -1881,11 +1877,18 @@ async function startServer() {
     app.use(express.static(distPath));
     app.get("*", (req: any, res: any) => {
       const indexPath = path.join(distPath, "index.html");
-      if (fs.existsSync(indexPath)) {
-        res.sendFile(indexPath);
-      } else {
-        res.status(404).json({ success: false, error: "Not Found", details: "Client assets are unavailable in serverless mode." });
+      try {
+        if (fs.existsSync(indexPath)) {
+          return res.sendFile(indexPath);
+        }
+      } catch (err) {
+        console.error("Error serving index.html:", err);
       }
+      return res.status(404).json({ 
+        success: false, 
+        error: "Client assets not found", 
+        details: "Ensure 'npm run build' was executed and 'dist' exists." 
+      });
     });
   }
 
@@ -1897,10 +1900,16 @@ const appPromise = startServer();
 export default async function (req: any, res: any) {
   try {
     const app = await appPromise;
+    // Standard Express handler call
     return app(req, res);
   } catch (err: any) {
-    console.error("Vercel Serverless Error:", err);
-    res.status(500).json({ success: false, error: "Cloud function crashed.", details: err.message });
+    console.error("CRITICAL: Vercel Serverless Function Crash:", err);
+    res.status(500).json({ 
+      success: false, 
+      error: "Cloud function crashed during initialization.", 
+      details: err.message || String(err),
+      stack: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
   }
 }
 
