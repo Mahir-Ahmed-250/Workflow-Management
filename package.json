@@ -7,8 +7,11 @@
     "dev": "tsx server.ts",
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=dist/server.cjs",
     "start": "node dist/server.cjs",
-    "clean": "rm -rf dist server.js",
+    "clean": "rm -rf dist server.js server.cjs",
     "lint": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
@@ -20,8 +23,8 @@
     "motion": "^12.23.24",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
-    "recharts": "^3.8.1",
-    "sweetalert2": "^11.26.25",
+    "recharts": "^2.12.7",
+    "sweetalert2": "^11.10.1",
     "vite": "^6.2.3"
   },
   "devDependencies": {

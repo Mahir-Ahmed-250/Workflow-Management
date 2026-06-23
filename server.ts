@@ -2,8 +2,12 @@ import express from "express";
 import path from "path";
 import fs from "fs";
 import os from "os";
+import { fileURLToPath } from "url";
 
-const PORT = process.env.PORT || 3000;
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const PORT = 3000;
 const isVercel = process.env.VERCEL === "1";
 
 // Hardcoded fallback data in case the external JSON is missing or blank
@@ -98,9 +102,17 @@ function initActiveDB() {
     // Try alternative paths if process.cwd() didn't work (e.g. inside vercel or built asset structure)
     if (!seedData || !seedData.users) {
       try {
-        const altPath = path.join(__dirname, "..", "src", "db", "db.json");
-        if (fs.existsSync(altPath)) {
-          seedData = JSON.parse(fs.readFileSync(altPath, "utf8"));
+        const altPaths = [
+          path.join(__dirname, "src", "db", "db.json"),
+          path.join(__dirname, "..", "src", "db", "db.json"),
+          path.join(__dirname, "db.json")
+        ];
+        
+        for (const altPath of altPaths) {
+          if (fs.existsSync(altPath)) {
+            seedData = JSON.parse(fs.readFileSync(altPath, "utf8"));
+            if (seedData && seedData.users) break;
+          }
         }
       } catch (e) {
         // ignore
